@@ -2,6 +2,7 @@ name: 统一加速构建 欧加真OKI内核
 
 env:
   TZ: Asia/Shanghai
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 on:
   workflow_dispatch:
@@ -436,6 +437,7 @@ jobs:
           sudo rm -rf /usr/local/lib/android &
           sudo rm -rf /opt/ghc &
           sudo rm -rf /opt/hostedtoolcache/CodeQL &
+          wait
 
           make -j"$(nproc --all)" \
             LLVM=1 \
@@ -459,7 +461,7 @@ jobs:
             O=out \
             KCFLAGS+=-O2 \
             KCFLAGS+=-Wno-error \
-            $BUILD_TARGET
+            "$BUILD_TARGET"
 
           echo "内核编译完成"
           ccache -s
@@ -485,6 +487,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "ksuver=${KSU_VERSION_OUTPUT:-0}" >> "$GITHUB_OUTPUT"
+          echo "KSUVER=${KSU_VERSION_OUTPUT:-0}" >> "$GITHUB_ENV"
 
       - name: AnyKernel3 打包
         id: pack
@@ -498,7 +501,7 @@ jobs:
             "$ANYKERNEL_REPO" \
             "$IMAGE_PATH" \
             "${{ inputs.ksu_type }}" \
-            "${KSUVER:-0}" \
+            "${KSU_VERSION_OUTPUT:-0}" \
             "$KERNEL_MAIN" \
             "$KERNEL_SUBVERSION" \
             "$KERNEL_NAME" \
