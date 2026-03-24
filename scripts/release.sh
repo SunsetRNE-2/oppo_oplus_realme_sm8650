@@ -16,15 +16,15 @@ generate_release_body() {
 - 编译时间: ${time_form}
 - 机型：欧加真骁龙8Gen3通用 ${kernel_main}.${kernel_sub} 内核（基于一加12 ${kernel_main}.${kernel_sub} Android 15 版官方OKI源码）
 - KSU分支：${ksu_typename}
-- susfs支持：${INPUT_SUSFS_ENABLE}
-- KPM支持 ：${INPUT_KPM_ENABLE}
-- LZ4支持：${INPUT_LZ4_ENABLE}
-- LZ4KD支持：${INPUT_LZ4KD_ENABLE}
-- 网络功能增强：${INPUT_BETTER_NET}
-- BBR/Brutal 等拥塞控制算法支持：${INPUT_BBR_ENABLE}
-- 三星SSG IO调度器支持：${INPUT_SSG_ENABLE}
-- Re-Kernel支持：${INPUT_REKERNEL_ENABLE}
-- 内核级基带保护支持：${INPUT_BASEBAND_GUARD}
+- susfs支持：${INPUT_SUSFS_ENABLE:-false}
+- KPM支持 ：${INPUT_KPM_ENABLE:-false}
+- LZ4支持：${INPUT_LZ4_ENABLE:-false}
+- LZ4KD支持：${INPUT_LZ4KD_ENABLE:-false}
+- 网络功能增强：${INPUT_BETTER_NET:-false}
+- BBR/Brutal 等拥塞控制算法支持：${INPUT_BBR_ENABLE:-false}
+- 三星SSG IO调度器支持：${INPUT_SSG_ENABLE:-false}
+- Re-Kernel支持：${INPUT_REKERNEL_ENABLE:-false}
+- 内核级基带保护支持：${INPUT_BASEBAND_GUARD:-false}
 - SukiSU Ultra管理器下载：[SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases)
 - KernelSU Next管理器下载：[KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next/releases)
 - KSU原版管理器下载：[KernelSU](https://github.com/tiann/KernelSU/releases)
