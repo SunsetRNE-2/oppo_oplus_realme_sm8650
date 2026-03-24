@@ -49,10 +49,12 @@ pack_anykernel() {
 
   cd "$workspace"
 
+  rm -rf AnyKernel3
+
   if [[ -n "${ANYKERNEL_BRANCH:-}" ]]; then
-    git clone "$anykernel_repo" --depth=1 -b "$ANYKERNEL_BRANCH" AnyKernel3
+    git clone "$anykernel_repo" --depth=1 -b "$ANYKERNEL_BRANCH" AnyKernel3 >&2
   else
-    git clone "$anykernel_repo" --depth=1 AnyKernel3
+    git clone "$anykernel_repo" --depth=1 AnyKernel3 >&2
   fi
 
   rm -rf ./AnyKernel3/.git
@@ -60,16 +62,16 @@ pack_anykernel() {
 
   cp "../common/${image_rel_path}" ./Image
   if [[ ! -f ./Image ]]; then
-    echo "未找到内核镜像文件"
+    echo "未找到内核镜像文件: ../common/${image_rel_path}" >&2
     return 1
   fi
 
   if [[ "$lz4kd_enable" == "true" ]]; then
-    wget "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/refs/heads/$GITHUB_REF_NAME/zram.zip"
+    wget -q "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/refs/heads/$GITHUB_REF_NAME/zram.zip" -O zram.zip >&2
   fi
 
   if [[ "$kpm_enable" == "kpn" ]]; then
-    wget "https://github.com/cctv18/KPatch-Next/releases/latest/download/kpn.zip"
+    wget -q "https://github.com/cctv18/KPatch-Next/releases/latest/download/kpn.zip" -O kpn.zip >&2
   fi
 
   local short_name
@@ -81,8 +83,6 @@ pack_anykernel() {
   else
     ak3_name="AnyKernel3_${short_name}_${ksuver}_${kernel_main}_${kernel_name}.zip"
   fi
-
-  zip -r "../${ak3_name}" ./*
 
   local full_version
   full_version="$(resolve_full_version "${kernel_main}.${kernel_sub}" "$kernel_name" "$kernel_suffix")"
@@ -111,6 +111,8 @@ pack_anykernel() {
     echo "BBG: ${INPUT_BASEBAND_GUARD:-}"
   } > ./ak3.log
 
-  zip -z "../${ak3_name}" < ./ak3.log
+  zip -rq "../${ak3_name}" . >&2
+  zip -zq "../${ak3_name}" < ./ak3.log >&2
+
   echo "$ak3_name"
 }
