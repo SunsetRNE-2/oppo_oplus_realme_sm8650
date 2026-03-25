@@ -12,6 +12,7 @@ case "$KERNEL_VERSION_INPUT" in
   "6.1.57")
     SUB_VERSION="57"
     ANDROID_VERSION="android14"
+    SUSFS_BRANCH_ANDROID="android14"
     KERNEL_NAME="android14-11-o-gca13bffobf09"
     CCACHE_KEY="ccache-neov3-6.1.57"
     REPO_URL="https://github.com/cctv18/android_kernel_common_oneplus_sm8650"
@@ -24,6 +25,7 @@ case "$KERNEL_VERSION_INPUT" in
   "6.1.75")
     SUB_VERSION="75"
     ANDROID_VERSION="android15"
+    SUSFS_BRANCH_ANDROID="android15"
     KERNEL_NAME="android14-11-o-gca13bffobf09"
     CCACHE_KEY="ccache-neov3-6.1.75"
     REPO_URL="https://github.com/cctv18/android_kernel_common_oneplus_sm8650"
@@ -36,6 +38,7 @@ case "$KERNEL_VERSION_INPUT" in
   "6.1.115")
     SUB_VERSION="115"
     ANDROID_VERSION="android15"
+    SUSFS_BRANCH_ANDROID="android15"
     KERNEL_NAME="android14-11-o-gca13bffobf09"
     CCACHE_KEY="ccache-neov3-6.1.115"
     REPO_URL="https://github.com/cctv18/android_kernel_oneplus_mt6989"
@@ -48,6 +51,7 @@ case "$KERNEL_VERSION_INPUT" in
   "6.1.118")
     SUB_VERSION="118"
     ANDROID_VERSION="android16"
+    SUSFS_BRANCH_ANDROID="android15"
     KERNEL_NAME="android14-11-o-gca13bffobf09"
     CCACHE_KEY="ccache-neov4-6.1.118"
     REPO_URL="https://github.com/cctv18/android_kernel_common_oneplus_sm8650"
@@ -60,6 +64,7 @@ case "$KERNEL_VERSION_INPUT" in
   "6.1.128")
     SUB_VERSION="128"
     ANDROID_VERSION="android15"
+    SUSFS_BRANCH_ANDROID="android15"
     KERNEL_NAME="android14-11-o-gca13bffobf09"
     CCACHE_KEY="ccache-neov3-6.1.128"
     REPO_URL="https://github.com/cctv18/android_kernel_oneplus_mt6897"
@@ -72,6 +77,7 @@ case "$KERNEL_VERSION_INPUT" in
   "6.1.134")
     SUB_VERSION="134"
     ANDROID_VERSION="android16"
+    SUSFS_BRANCH_ANDROID="android15"
     KERNEL_NAME="android14-11-o-gca13bffobf09"
     CCACHE_KEY="ccache-neov3-6.1.134"
     REPO_URL="https://github.com/cctv18/android_kernel_oneplus_mt6989"
@@ -90,6 +96,7 @@ esac
 cat <<EOF
 SUB_VERSION=$SUB_VERSION
 ANDROID_VERSION=$ANDROID_VERSION
+SUSFS_BRANCH_ANDROID=$SUSFS_BRANCH_ANDROID
 KERNEL_NAME=$KERNEL_NAME
 CCACHE_KEY=$CCACHE_KEY
 REPO_URL=$REPO_URL
