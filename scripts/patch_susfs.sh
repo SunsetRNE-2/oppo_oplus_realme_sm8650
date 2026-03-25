@@ -16,6 +16,7 @@ fi
 
 if [[ "${KSU_TYPE:-none}" != "none" ]]; then
   echo "正在添加susfs补丁..."
+  echo "使用 susfs 分支映射: oki-${SUSFS_BRANCH_ANDROID}-${KERNEL_VERSION}"
   git clone --depth=1 https://github.com/cctv18/susfs4oki.git susfs4ksu -b "oki-${SUSFS_BRANCH_ANDROID}-${KERNEL_VERSION}"
   wget "https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/69_hide_stuff.patch" -O ./common/69_hide_stuff.patch
   cp "./susfs4ksu/kernel_patches/50_add_susfs_in_gki-${SUSFS_BRANCH_ANDROID}-${KERNEL_VERSION}.patch" ./common/
