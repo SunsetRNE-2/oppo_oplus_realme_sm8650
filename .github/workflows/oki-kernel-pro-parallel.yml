@@ -1,0 +1,679 @@
+name: 多元并行·统一架构欧加真内核Pro版
+
+env:
+  TZ: Asia/Shanghai
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_mode:
+        description: "构建目标模式"
+        required: true
+        type: choice
+        default: "single"
+        options:
+          - single
+          - all-sm8650
+          - all-mtk
+          - all
+          - custom
+
+      kernel_version:
+        description: "单版本模式时使用，例如 6.1.118"
+        required: false
+        type: choice
+        default: "6.1.118"
+        options:
+          - "6.1.57"
+          - "6.1.75"
+          - "6.1.115"
+          - "6.1.118"
+          - "6.1.128"
+          - "6.1.134"
+
+      custom_targets:
+        description: "自定义目标列表，逗号分隔，例如 6.1.57,6.1.118,6.1.134"
+        required: false
+        type: string
+        default: ""
+
+      ksu_type:
+        description: "KernelSU分支"
+        required: true
+        type: choice
+        default: "resukisu"
+        options:
+          - "resukisu"
+          - "sukisu"
+          - "ksunext"
+          - "ksu"
+          - "none"
+
+      susfs_enable:
+        description: "是否开启susfs"
+        required: true
+        type: boolean
+        default: true
+
+      kpm_enable:
+        description: "是否开启kpm"
+        required: true
+        type: choice
+        default: "false"
+        options:
+          - "false"
+          - "builtin"
+          - "kpn"
+
+      lz4_enable:
+        description: "是否安装 lz4 1.10.0 + zstd 1.5.7 补丁"
+        required: true
+        type: boolean
+        default: true
+
+      lz4kd_enable:
+        description: "是否安装 lz4kd 补丁"
+        required: true
+        type: boolean
+        default: false
+
+      bbr_enable:
+        description: "是否启用 bbr 算法"
+        required: true
+        type: choice
+        default: "false"
+        options:
+          - "false"
+          - "true"
+          - "default"
+
+      better_net:
+        description: "是否开启网络功能拓展配置"
+        required: true
+        type: boolean
+        default: false
+
+      ssg_enable:
+        description: "是否启用三星SSG IO调度器"
+        required: true
+        type: boolean
+        default: true
+
+      rekernel_enable:
+        description: "是否启用Re-Kernel支持"
+        required: true
+        type: boolean
+        default: false
+
+      baseband_guard:
+        description: "是否开启内核级基带保护"
+        required: true
+        type: boolean
+        default: true
+
+      ccache_update:
+        description: "是否更新 ccache 缓存"
+        required: true
+        type: boolean
+        default: false
+
+      ccache_debug:
+        description: "是否上传 ccache 调试日志"
+        required: true
+        type: boolean
+        default: false
+
+      use_custom_suffix:
+        description: "是否使用自定义尾缀"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: pro-oki-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+      target_count: ${{ steps.resolve.outputs.target_count }}
+      release_scope_name: ${{ steps.resolve.outputs.release_scope_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure pro_oki scripts executable
+        run: chmod +x scripts/pro_oki/*.sh
+
+      - name: Resolve build targets
+        id: resolve
+        env:
+          TARGET_MODE: ${{ github.event.inputs.target_mode }}
+          KERNEL_VERSION_FULL: ${{ github.event.inputs.kernel_version }}
+          CUSTOM_TARGETS: ${{ github.event.inputs.custom_targets }}
+          PRO_OKI_WRITE_GITHUB_OUTPUT: 1
+        run: |
+          bash scripts/pro_oki/pro_oki_target_resolver.sh
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    permissions:
+      actions: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure pro_oki scripts executable
+        run: chmod +x scripts/pro_oki/*.sh
+
+      - name: Load version catalog
+        run: |
+          bash scripts/pro_oki/pro_oki_version_catalog.sh "${{ matrix.kernel_version_full }}" > version.env
+          cat version.env >> "$GITHUB_ENV"
+          cat version.env
+
+      - name: Install basic dependencies
+        run: |
+          sudo apt-mark hold firefox || true
+          sudo apt-mark hold libc-bin || true
+          sudo apt purge -y man-db || true
+          sudo rm -rf /var/lib/man-db/auto-update || true
+          sudo apt update
+          sudo apt-get install -y --no-install-recommends \
+            binutils python-is-python3 libssl-dev libelf-dev ccache \
+            unzip aria2 zstd wget curl git bc bison flex dwarves lld pahole
+
+      - name: Init workspace and fetch source/toolchain
+        run: |
+          rm -rf kernel_workspace
+          mkdir -p kernel_workspace
+          cd kernel_workspace
+
+          aria2c -s16 -x16 -k1M "${REPO_URL}/archive/refs/heads/${REPO_ARCHIVE}.zip" -o common.zip
+          unzip -q common.zip
+          mv "${REPO_EXTRACT_NAME}" common
+          rm -f common.zip
+
+          mkdir -p clang20
+          aria2c -s16 -x16 -k1M "https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/LLVM-Clang20-r547379/clang-r547379.zip" -o clang.zip
+          unzip -q clang.zip -d clang20
+          rm -f clang.zip
+
+          aria2c -s16 -x16 -k1M "https://github.com/cctv18/oneplus_sm8650_toolchain/releases/download/LLVM-Clang20-r547379/build-tools.zip" -o build-tools.zip
+          unzip -q build-tools.zip
+          rm -f build-tools.zip
+
+          rm common/android/abi_gki_protected_exports_* || true
+          for f in common/scripts/setlocalversion; do
+            sed -i 's/ -dirty//g' "$f"
+            sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' "$f"
+          done
+
+      - name: Setup ccache
+        run: |
+          echo "CCACHE_DIR=$HOME/.ccache_${KERNEL_VERSION}.${SUB_VERSION}" >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=3G" >> "$GITHUB_ENV"
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        id: ccache_restore
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ env.CCACHE_KEY }}-${{ runner.os }}-${{ github.ref_name }}
+          restore-keys: |
+            ${{ env.CCACHE_KEY }}-${{ runner.os }}-
+            ${{ env.CCACHE_KEY }}-
+
+      - name: Download public ccache
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -d "${{ env.CCACHE_DIR }}" ] && [ "$(ls -A "${{ env.CCACHE_DIR }}" 2>/dev/null)" ]; then
+            echo "Local ccache already exists."
+            exit 0
+          fi
+
+          mkdir -p "${{ env.CCACHE_DIR }}"
+          if gh release download -p "${CCACHE_FILE_NAME}" -R cctv18/public_ccache; then
+            tar -I zstd -xf "${CCACHE_FILE_NAME}" -C "${{ env.CCACHE_DIR }}"
+          else
+            echo "Public ccache not found, continue."
+          fi
+
+      - name: Init ccache config
+        run: |
+          export CCACHE_COMPILERCHECK=none
+          export CCACHE_BASEDIR="${{ github.workspace }}"
+          export CCACHE_NOHASHDIR=true
+          export CCACHE_HARDLINK=true
+          export CCACHE_DIR="${{ env.CCACHE_DIR }}"
+          export CCACHE_MAXSIZE="${{ env.CCACHE_MAXSIZE }}"
+          mkdir -p "$CCACHE_DIR"
+          ccache -M "$CCACHE_MAXSIZE"
+          ccache -o compression=true
+          ccache -s
+          echo "ccache_restore.cache-hit=${{ steps.ccache_restore.outputs.cache-hit }}"
+
+      - name: Setup real KernelSU
+        id: ksu_version
+        run: |
+          cd kernel_workspace
+
+          if [[ "${{ github.event.inputs.ksu_type }}" == "sukisu" ]]; then
+            echo "正在配置 SukiSU Ultra..."
+            curl -LSs "https://raw.githubusercontent.com/ShirkNeko/SukiSU-Ultra/refs/heads/main/kernel/setup.sh" | bash -s builtin
+            cd ./KernelSU
+            GIT_COMMIT_HASH=$(git rev-parse --short=8 HEAD)
+            for i in {1..3}; do
+              KSU_API_VERSION=$(curl -s "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/builtin/kernel/Kbuild" | grep -m1 "KSU_VERSION_API :=" | awk -F'= ' '{print $2}' | tr -d '[:space:]')
+              [ -n "$KSU_API_VERSION" ] && break || sleep 1
+            done
+            [ -z "${KSU_API_VERSION:-}" ] && KSU_API_VERSION="3.1.7"
+            echo "KSU_API_VERSION=$KSU_API_VERSION" >> "$GITHUB_ENV"
+            VERSION_DEFINITIONS=$'define get_ksu_version_full\nv\\$1-'"$GIT_COMMIT_HASH"$'@SunsetRNE\nendef\n\nKSU_VERSION_API := '"$KSU_API_VERSION"$'\nKSU_VERSION_FULL := v'"$KSU_API_VERSION"$'-'"$GIT_COMMIT_HASH"$'@SunsetRNE'
+            sed -i '/define get_ksu_version_full/,/endef/d' kernel/Kbuild
+            sed -i '/KSU_VERSION_API :=/d' kernel/Kbuild
+            sed -i '/KSU_VERSION_FULL :=/d' kernel/Kbuild
+            awk -v def="$VERSION_DEFINITIONS" '/REPO_OWNER :=/ {print; print def; inserted=1; next} 1 END {if (!inserted) print def}' kernel/Kbuild > kernel/Kbuild.tmp && mv kernel/Kbuild.tmp kernel/Kbuild
+            KSU_VERSION=$(expr $(git rev-list --count main) + 37185 2>/dev/null || echo 114514)
+
+          elif [[ "${{ github.event.inputs.ksu_type }}" == "resukisu" ]]; then
+            echo "正在配置 ReSukiSU..."
+            curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/refs/heads/main/kernel/setup.sh" | bash -s main
+            echo 'CONFIG_KSU_FULL_NAME_FORMAT="%TAG_NAME%-%COMMIT_SHA%@SunsetRNE"' >> ./common/arch/arm64/configs/gki_defconfig
+            cd ./KernelSU
+            KSU_VERSION=$(expr $(git rev-list --count main) + 30700 2>/dev/null || echo 114514)
+
+          elif [[ "${{ github.event.inputs.ksu_type }}" == "ksunext" ]]; then
+            echo "正在配置 KernelSU Next..."
+            curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/refs/heads/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
+            cd KernelSU-Next
+            rm -rf .git
+            KSU_VERSION=$(expr $(curl -sI "https://api.github.com/repos/pershoot/KernelSU-Next/commits?sha=dev&per_page=1" | grep -i "link:" | sed -n 's/.*page=\([0-9]*\)>; rel="last".*/\1/p') "+" 30000)
+            sed -i "s/KSU_VERSION_FALLBACK := 1/KSU_VERSION_FALLBACK := $KSU_VERSION/g" kernel/Kbuild
+            KSU_GIT_TAG=$(curl -sL "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/tags" | grep -o '"name": *"[^"]*"' | head -n 1 | sed 's/"name": "//;s/"//')
+            sed -i "s/KSU_VERSION_TAG_FALLBACK := v0.0.1/KSU_VERSION_TAG_FALLBACK := $KSU_GIT_TAG/g" kernel/Kbuild
+            cd ../common/drivers/kernelsu
+            wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/apk_sign.patch
+            patch -p2 -N -F 3 < apk_sign.patch || true
+
+          elif [[ "${{ github.event.inputs.ksu_type }}" == "ksu" ]]; then
+            echo "正在配置原版 KernelSU..."
+            curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/refs/heads/main/kernel/setup.sh" | bash -s main
+            cd ./KernelSU
+            KSU_VERSION=$(expr $(curl -sI "https://api.github.com/repos/tiann/KernelSU/commits?sha=main&per_page=1" | grep -i "link:" | sed -n 's/.*page=\([0-9]*\)>; rel="last".*/\1/p') "+" 30000)
+            sed -i "s/DKSU_VERSION=16/DKSU_VERSION=${KSU_VERSION}/" kernel/Kbuild
+
+          else
+            echo "已选择无内置 KSU 模式"
+            KSU_VERSION=0
+          fi
+
+          echo "KSUVER=$KSU_VERSION" >> "$GITHUB_ENV"
+          echo "ksuver=$KSU_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Apply real susfs patch
+        if: ${{ inputs.susfs_enable }}
+        run: |
+          cd kernel_workspace
+
+          if [[ "${{ github.event.inputs.ksu_type }}" != "none" ]]; then
+            echo "正在应用 susfs patch..."
+            git clone --depth=1 https://github.com/cctv18/susfs4oki.git susfs4ksu -b "oki-${ANDROID_VERSION}-${KERNEL_VERSION}"
+            wget "https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/other_patch/69_hide_stuff.patch" -O ./common/69_hide_stuff.patch
+            cp "./susfs4ksu/kernel_patches/50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch" ./common/
+            cp ./susfs4ksu/kernel_patches/fs/* ./common/fs/
+            cp ./susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
+
+            cd ./common
+            patch -p1 < "50_add_susfs_in_gki-${ANDROID_VERSION}-${KERNEL_VERSION}.patch" || true
+            patch -p1 -N -F 3 < 69_hide_stuff.patch || true
+            cd ..
+          else
+            echo "已选择无内置 KSU 模式，跳过 susfs 主补丁"
+          fi
+
+          if [[ "${{ github.event.inputs.ksu_type }}" == "ksu" && "${{ github.event.inputs.susfs_enable }}" == "true" ]]; then
+            echo "正在为原版 KernelSU 应用 susfs 兼容补丁..."
+            cp ./susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ./KernelSU/
+            cd ./KernelSU
+            patch -p1 < 10_enable_susfs_for_ksu.patch || true
+          fi
+
+      - name: Apply real lz4 patch
+        if: ${{ inputs.lz4_enable }}
+        run: |
+          cd kernel_workspace
+          echo "正在应用 lz4 1.10.0 + zstd 1.5.7 patch..."
+          git clone --depth=1 "https://github.com/$GITHUB_REPOSITORY.git" -b "$GITHUB_REF_NAME" "$GITHUB_ACTOR"
+          cp "./$GITHUB_ACTOR/zram_patch/001-lz4.patch" ./common/
+          cp "./$GITHUB_ACTOR/zram_patch/lz4armv8.S" ./common/lib
+          cp "./$GITHUB_ACTOR/zram_patch/002-zstd.patch" ./common/
+          cd ./common
+          git apply -p1 < 001-lz4.patch || true
+          patch -p1 < 002-zstd.patch || true
+
+      - name: Apply real lz4kd patch
+        if: ${{ inputs.lz4kd_enable }}
+        run: |
+          cd kernel_workspace
+          if [ ! -d "SukiSU_patch" ]; then
+            git clone --depth=1 https://github.com/ShirkNeko/SukiSU_patch.git
+          fi
+          cd common
+          cp -r ../SukiSU_patch/other/zram/lz4k/include/linux/* ./include/linux/
+          cp -r ../SukiSU_patch/other/zram/lz4k/lib/* ./lib
+          cp -r ../SukiSU_patch/other/zram/lz4k/crypto/* ./crypto
+          cp ../SukiSU_patch/other/zram/zram_patch/${KERNEL_VERSION}/lz4kd.patch ./
+          patch -p1 -F 3 < lz4kd.patch || true
+
+      - name: Inject base config
+        run: |
+          cd kernel_workspace
+          DEFCONFIG=./common/arch/arm64/configs/gki_defconfig
+
+          echo "CONFIG_KSU=y" >> "$DEFCONFIG"
+
+          if [[ "${{ github.event.inputs.kpm_enable }}" == "builtin" && ( "${{ github.event.inputs.ksu_type }}" == "sukisu" || "${{ github.event.inputs.ksu_type }}" == "resukisu" ) ]]; then
+            echo "CONFIG_KPM=y" >> "$DEFCONFIG"
+          fi
+
+          if [[ "${{ github.event.inputs.susfs_enable }}" == "true" ]]; then
+            echo "CONFIG_KSU_SUSFS=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$DEFCONFIG"
+            echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> "$DEFCONFIG"
+          else
+            echo "CONFIG_KSU_SUSFS=n" >> "$DEFCONFIG"
+          fi
+
+          echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG"
+          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG"
+          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> "$DEFCONFIG"
+          echo "CONFIG_HEADERS_INSTALL=n" >> "$DEFCONFIG"
+
+          if [[ "${{ github.event.inputs.lz4kd_enable }}" == "true" ]]; then
+            echo "CONFIG_ZSMALLOC=y" >> "$DEFCONFIG"
+            echo "CONFIG_CRYPTO_LZ4HC=y" >> "$DEFCONFIG"
+            echo "CONFIG_CRYPTO_LZ4K=y" >> "$DEFCONFIG"
+            echo "CONFIG_CRYPTO_LZ4KD=y" >> "$DEFCONFIG"
+            echo "CONFIG_CRYPTO_842=y" >> "$DEFCONFIG"
+          fi
+
+          sed -i 's/check_defconfig//' ./common/build.config.gki || true
+
+      - name: Build real kernel
+        run: |
+          WORKDIR="$(pwd)"
+          export PATH="/usr/lib/ccache:$PATH"
+          export PATH="$WORKDIR/kernel_workspace/clang20/bin:$PATH"
+          export PATH="$WORKDIR/kernel_workspace/build-tools/bin:$PATH"
+
+          CLANG_DIR="$WORKDIR/kernel_workspace/clang20/bin"
+          echo "Clang: $($CLANG_DIR/clang --version | head -n 1)"
+          echo "LLD: $($CLANG_DIR/ld.lld --version | head -n 1)"
+
+          export CCACHE_LOGFILE="${{ github.workspace }}/kernel_workspace/ccache.log"
+          export CCACHE_COMPILERCHECK="none"
+          export CCACHE_BASEDIR="${{ github.workspace }}"
+          export CCACHE_NOHASHDIR="true"
+          export CCACHE_HARDLINK="true"
+          export CCACHE_DIR="${{ env.CCACHE_DIR }}"
+          export CCACHE_MAXSIZE="${{ env.CCACHE_MAXSIZE }}"
+          mkdir -p "$CCACHE_DIR"
+          echo "sloppiness = file_stat_matches,include_file_ctime,include_file_mtime,pch_defines,file_macro,time_macros" >> "$CCACHE_DIR/ccache.conf"
+
+          cd kernel_workspace/common
+          wget "https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/lib/libfakestat.so"
+          wget "https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/lib/libfaketimeMT.so"
+          chmod 777 ./*.so
+
+          export FAKESTAT="2025-05-25 12:00:00"
+          export FAKETIME="@2025-05-25 13:00:00"
+          echo "FAKESTAT=$FAKESTAT" >> "$GITHUB_ENV"
+          echo "FAKETIME=$FAKETIME" >> "$GITHUB_ENV"
+
+          SO_DIR=$(pwd)
+          export PRELOAD_LIBS="$SO_DIR/libfakestat.so $SO_DIR/libfaketimeMT.so"
+
+          {
+            echo '#!/bin/bash'
+            echo "export LD_PRELOAD=\"$PRELOAD_LIBS\""
+            echo "export FAKESTAT=\"$FAKESTAT\""
+            echo "export FAKETIME=\"$FAKETIME\""
+            echo 'ccache clang "$@"'
+          } > cc-wrapper
+
+          {
+            echo '#!/bin/bash'
+            echo "export LD_PRELOAD=\"$PRELOAD_LIBS\""
+            echo "export FAKESTAT=\"$FAKESTAT\""
+            echo "export FAKETIME=\"$FAKETIME\""
+            echo 'ld.lld "$@"'
+          } > ld-wrapper
+
+          chmod +x cc-wrapper ld-wrapper
+
+          sudo rm -rf /usr/share/dotnet &
+          sudo rm -rf /usr/local/lib/android &
+          sudo rm -rf /opt/ghc &
+          sudo rm -rf /opt/hostedtoolcache/CodeQL &
+
+          make -j"$(nproc --all)" LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error gki_defconfig
+          make -j"$(nproc --all)" LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error Image
+
+          test -f out/arch/arm64/boot/Image
+          echo "REAL_IMAGE_PATH=$WORKDIR/kernel_workspace/common/out/arch/arm64/boot/Image" >> "$GITHUB_ENV"
+
+      - name: Apply KPM / KPN post patch
+        run: |
+          if [[ "${{ github.event.inputs.kpm_enable }}" == "builtin" && ( "${{ github.event.inputs.ksu_type }}" == "sukisu" || "${{ github.event.inputs.ksu_type }}" == "resukisu" ) ]]; then
+            echo "正在应用 builtin KPM 后处理..."
+            cd kernel_workspace/common/out/arch/arm64/boot
+            curl -LO https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/latest/download/patch_linux
+            chmod +x patch_linux
+            ./patch_linux
+            rm -f Image
+            mv oImage Image
+          fi
+
+          if [[ "${{ github.event.inputs.kpm_enable }}" == "kpn" ]]; then
+            echo "正在应用 KPN 后处理..."
+            cd kernel_workspace/common/out/arch/arm64/boot
+            wget https://github.com/KernelSU-Next/KPatch-Next/releases/latest/download/kptools-linux
+            wget https://github.com/KernelSU-Next/KPatch-Next/releases/latest/download/kpimg-linux
+            chmod +x ./kptools-linux
+            ./kptools-linux -p -i ./Image -k ./kpimg-linux -o ./oImage
+            rm -f Image
+            mv oImage Image
+          fi
+
+          echo "REAL_IMAGE_PATH=$(pwd)/Image" >> "$GITHUB_ENV"
+
+      - name: Package real AnyKernel3
+        run: |
+          cd kernel_workspace
+          git clone https://github.com/cctv18/AnyKernel3 --depth=1
+          rm -rf ./AnyKernel3/.git
+          cd AnyKernel3
+          cp ../common/out/arch/arm64/boot/Image ./Image
+          test -f ./Image
+
+          if [[ "${{ github.event.inputs.ksu_type }}" == "sukisu" ]]; then
+            KSU_TYPENAME="SukiSU"
+          elif [[ "${{ github.event.inputs.ksu_type }}" == "resukisu" ]]; then
+            KSU_TYPENAME="ReSukiSU"
+          elif [[ "${{ github.event.inputs.ksu_type }}" == "ksunext" ]]; then
+            KSU_TYPENAME="KSUNext"
+          elif [[ "${{ github.event.inputs.ksu_type }}" == "ksu" ]]; then
+            KSU_TYPENAME="KSU"
+          else
+            KSU_TYPENAME="none"
+          fi
+          echo "KSU_TYPENAME=$KSU_TYPENAME" >> "$GITHUB_ENV"
+
+          if [[ "${{ github.event.inputs.lz4kd_enable }}" == "true" ]]; then
+            wget "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/refs/heads/$GITHUB_REF_NAME/zram.zip"
+          fi
+
+          if [[ "${{ github.event.inputs.kpm_enable }}" == "kpn" ]]; then
+            wget https://github.com/cctv18/KPatch-Next/releases/latest/download/kpn.zip
+          fi
+
+          if [[ "${{ github.event.inputs.use_custom_suffix }}" == "true" ]]; then
+            CUSTOM_SUFFIX="Zsunset_暮雨年秋冬-2-$(TZ='Asia/Shanghai' date +'%Y-%m-%d-%H')-${{ github.run_number }}"
+            FULL_VERSION="${KERNEL_VERSION}.${SUB_VERSION}-${CUSTOM_SUFFIX}"
+            ZIP_NAME="AnyKernel3_${KSU_TYPENAME}_${KSUVER}_${KERNEL_VERSION}_${CUSTOM_SUFFIX}.zip"
+          else
+            FULL_VERSION="${FULL_VERSION_DEFAULT}"
+            ZIP_NAME="AnyKernel3_${KSU_TYPENAME}_${KSUVER}_${KERNEL_VERSION}_${KERNEL_NAME}.zip"
+          fi
+
+          {
+            echo "Author: $GITHUB_ACTOR"
+            echo "Repo: $GITHUB_REPOSITORY"
+            echo "Branch: $GITHUB_REF_NAME"
+            echo "Run ID: $GITHUB_RUN_ID"
+            echo "Commit: $GITHUB_SHA"
+            echo "Kernel Ver: $FULL_VERSION"
+            echo "KSU Branch: ${KSU_TYPENAME}"
+            echo "KSU Ver: ${KSUVER}"
+            echo "susfs: ${{ github.event.inputs.susfs_enable }}"
+            echo "KPM: ${{ github.event.inputs.kpm_enable }}"
+            echo "LZ4: ${{ github.event.inputs.lz4_enable }}"
+            echo "LZ4KD: ${{ github.event.inputs.lz4kd_enable }}"
+            echo "better_net: ${{ github.event.inputs.better_net }}"
+            echo "BBR: ${{ github.event.inputs.bbr_enable }}"
+            echo "SSG: ${{ github.event.inputs.ssg_enable }}"
+            echo "Re-Kernel: ${{ github.event.inputs.rekernel_enable }}"
+            echo "BBG: ${{ github.event.inputs.baseband_guard }}"
+          } > ./ak3.log
+
+          zip -q -r "../$ZIP_NAME" ./*
+          zip -z "../$ZIP_NAME" < ./ak3.log || true
+          test -f "../$ZIP_NAME"
+
+          echo "FULL_VERSION=$FULL_VERSION" >> "$GITHUB_ENV"
+          echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
+
+      - name: Save ccache
+        if: ${{ inputs.ccache_update || steps.ccache_restore.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ env.CCACHE_KEY }}-${{ runner.os }}-${{ github.ref_name }}
+
+      - name: Upload ccache debug log
+        if: ${{ always() && inputs.ccache_debug }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ccache-debug-log-${{ matrix.kernel_version_full }}
+          path: ${{ github.workspace }}/kernel_workspace/ccache.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload final package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ matrix.kernel_version_full }}
+          path: ${{ github.workspace }}/kernel_workspace/${{ env.ZIP_NAME }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      actions: read
+    steps:
+      - name: Download package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: 'kernel-*'
+          path: ./release_zips
+          merge-multiple: true
+
+      - name: Flatten final release assets
+        run: |
+          mkdir -p ./release_upload
+          find ./release_zips -type f -name "AnyKernel3*.zip" -exec cp -f {} ./release_upload/ \;
+          ls -lah ./release_upload
+
+      - name: Build release body
+        run: |
+          TIME="$(TZ='Asia/Shanghai' date +'%y%m%d%H%M%S')"
+          TIME_FORM="$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')"
+          TAG_HEAD="OPPO-OPlus-Realme-build-pro"
+          RELEASE_SCOPE_NAME="${{ needs.prepare.outputs.release_scope_name }}"
+          TARGET_COUNT="${{ needs.prepare.outputs.target_count }}"
+
+          BODY_FILE=release_body.md
+          {
+            echo "### 📱 多元并行·统一架构欧加真内核Pro版 | 验证阶段"
+            echo "- 构建范围：$RELEASE_SCOPE_NAME"
+            echo "- 目标数量：$TARGET_COUNT"
+            echo "- 编译时间：$TIME_FORM"
+            echo "- KSU类型：${{ github.event.inputs.ksu_type }}"
+            echo "- susfs：${{ github.event.inputs.susfs_enable }}"
+            echo "- kpm：${{ github.event.inputs.kpm_enable }}"
+            echo "- lz4：${{ github.event.inputs.lz4_enable }}"
+            echo "- lz4kd：${{ github.event.inputs.lz4kd_enable }}"
+            echo "- better_net：${{ github.event.inputs.better_net }}"
+            echo "- bbr：${{ github.event.inputs.bbr_enable }}"
+            echo "- ssg：${{ github.event.inputs.ssg_enable }}"
+            echo "- rekernel：${{ github.event.inputs.rekernel_enable }}"
+            echo "- baseband_guard：${{ github.event.inputs.baseband_guard }}"
+            echo
+            echo "### 📦 附件列表"
+            for f in ./release_upload/*.zip; do
+              [ -e "$f" ] || continue
+              echo "- $(basename "$f")"
+            done
+          } > "$BODY_FILE"
+
+          echo "TIME=$TIME" >> "$GITHUB_ENV"
+          echo "TAG_HEAD=$TAG_HEAD" >> "$GITHUB_ENV"
+          echo "RELEASE_SCOPE_NAME=$RELEASE_SCOPE_NAME" >> "$GITHUB_ENV"
+          {
+            echo 'RELEASE_BODY<<EOF'
+            cat "$BODY_FILE"
+            echo 'EOF'
+          } >> "$GITHUB_ENV"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_HEAD }}-${{ env.RELEASE_SCOPE_NAME }}-${{ env.TIME }}
+          name: ${{ env.TAG_HEAD }}-${{ env.RELEASE_SCOPE_NAME }}-${{ env.TIME }}
+          body: ${{ env.RELEASE_BODY }}
+          files: ./release_upload/*.zip
+          draft: false
+          prerelease: false
