@@ -1,0 +1,318 @@
+name: 统一构建 - 欧加真OKI内核
+
+env:
+  TZ: Asia/Shanghai
+  KERNEL_VERSION: '6.1'
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: '选择内核版本'
+        required: true
+        type: choice
+        default: '6.1.118'
+        options:
+          - '6.1.57'
+          - '6.1.75'
+          - '6.1.115'
+          - '6.1.118'
+          - '6.1.128'
+          - '6.1.134'
+      ksu_type:
+        description: 'KernelSU分支'
+        required: true
+        type: choice
+        default: 'resukisu'
+        options:
+          - 'resukisu'
+          - 'sukisu'
+          - 'ksunext'
+          - 'ksu'
+          - 'none'
+      susfs_enable:
+        description: '是否开启susfs'
+        required: true
+        type: boolean
+        default: true
+      kpm_enable:
+        description: '是否开启kpm'
+        required: true
+        type: choice
+        default: 'false'
+        options:
+          - 'false'
+          - 'builtin'
+          - 'kpn'
+      lz4_enable:
+        description: '是否安装 lz4 1.10.0+zstd 1.5.7 补丁及 LZ4KD 补丁'
+        required: true
+        type: boolean
+        default: true
+      lz4kd_enable:
+        description: '是否安装 LZ4KD 补丁'
+        required: true
+        type: boolean
+        default: false
+      bbr_enable:
+        description: '是否启用bbr算法'
+        required: true
+        type: choice
+        default: 'false'
+        options:
+          - 'false'
+          - 'true'
+          - 'default'
+      better_net:
+        description: '是否开启网络功能拓展配置'
+        required: true
+        type: boolean
+        default: false
+      ssg_enable:
+        description: '是否启用三星SSG IO调度器支持'
+        required: true
+        type: boolean
+        default: true
+      rekernel_enable:
+        description: '是否启用Re-Kernel支持'
+        required: true
+        type: boolean
+        default: false
+      baseband_guard:
+        description: '是否开启内核级基带保护'
+        required: true
+        type: boolean
+        default: true
+      ccache_update:
+        description: '更新ccache缓存'
+        required: true
+        type: boolean
+        default: false
+      ccache_debug:
+        description: '是否上传 Ccache调试日志'
+        required: true
+        type: boolean
+        default: false
+      kernel_suffix:
+        description: '内核后缀'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      sub_version: ${{ steps.set_vars.outputs.sub_version }}
+      kernel_name: ${{ steps.set_vars.outputs.kernel_name }}
+      platform_name: ${{ steps.set_vars.outputs.platform_name }}
+      device_desc: ${{ steps.set_vars.outputs.device_desc }}
+      source_desc: ${{ steps.set_vars.outputs.source_desc }}
+      ak3name: ${{ steps.collect_meta.outputs.ak3name }}
+      ksuver: ${{ steps.collect_meta.outputs.ksuver }}
+    permissions:
+      actions: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 准备脚本权限
+        run: chmod +x scripts/*.sh
+
+      - name: 设置版本相关变量
+        id: set_vars
+        shell: bash
+        run: |
+          while IFS= read -r line; do
+            echo "$line" >> "$GITHUB_ENV"
+            key="${line%%=*}"
+            value="${line#*=}"
+            case "$key" in
+              SUB_VERSION) echo "sub_version=$value" >> "$GITHUB_OUTPUT" ;;
+              KERNEL_NAME) echo "kernel_name=$value" >> "$GITHUB_OUTPUT" ;;
+              PLATFORM_NAME) echo "platform_name=$value" >> "$GITHUB_OUTPUT" ;;
+              DEVICE_DESC) echo "device_desc=$value" >> "$GITHUB_OUTPUT" ;;
+              SOURCE_DESC) echo "source_desc=$value" >> "$GITHUB_OUTPUT" ;;
+            esac
+          done < <(./scripts/version_map.sh "${{ github.event.inputs.kernel_version }}")
+
+      - name: 导出通用构建环境变量
+        run: |
+          echo "KSU_TYPE=${{ github.event.inputs.ksu_type }}" >> "$GITHUB_ENV"
+          echo "KPM_ENABLE=${{ github.event.inputs.kpm_enable }}" >> "$GITHUB_ENV"
+          echo "LZ4_ENABLE=${{ github.event.inputs.lz4_enable }}" >> "$GITHUB_ENV"
+          echo "LZ4KD_ENABLE=${{ github.event.inputs.lz4kd_enable }}" >> "$GITHUB_ENV"
+          echo "SUSFS_ENABLE=${{ github.event.inputs.susfs_enable }}" >> "$GITHUB_ENV"
+          echo "BETTER_NET=${{ github.event.inputs.better_net }}" >> "$GITHUB_ENV"
+          echo "BBR_ENABLE=${{ github.event.inputs.bbr_enable }}" >> "$GITHUB_ENV"
+          echo "SSG_ENABLE=${{ github.event.inputs.ssg_enable }}" >> "$GITHUB_ENV"
+          echo "REKERNEL_ENABLE=${{ github.event.inputs.rekernel_enable }}" >> "$GITHUB_ENV"
+          echo "BASEBAND_GUARD=${{ github.event.inputs.baseband_guard }}" >> "$GITHUB_ENV"
+          echo "KERNEL_SUFFIX=${{ github.event.inputs.kernel_suffix }}" >> "$GITHUB_ENV"
+
+      - name: 并行初始化工作区
+        run: |
+          rm -rf kernel_workspace
+          mkdir -p kernel_workspace
+          ./scripts/install_deps.sh &
+          ./scripts/fetch_kernel_source.sh kernel_workspace &
+          ./scripts/fetch_toolchain.sh kernel_workspace &
+          wait
+          ./scripts/prepare_source.sh kernel_workspace
+
+      - name: 配置ccache目录
+        run: |
+          echo "CCACHE_DIR=$HOME/.ccache_${{ env.KERNEL_VERSION }}.${{ env.SUB_VERSION }}" >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=3G" >> "$GITHUB_ENV"
+          df -h
+
+      - name: 载入当前版本内核的 ccache缓存
+        uses: actions/cache@v4
+        id: ccache_restore
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ env.CCACHE_KEY }}-${{ runner.os }}-${{ github.ref_name }}
+          restore-keys: |
+            ${{ env.CCACHE_KEY }}-${{ runner.os }}-
+            ${{ env.CCACHE_KEY }}-
+
+      - name: 拉取公共预置 ccache 缓存
+        if: steps.ccache_restore.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/restore_public_ccache.sh
+
+      - name: 清除旧 ccache 缓存
+        if: inputs.ccache_update
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh cache delete ${{ env.CCACHE_KEY }}-${{ runner.os }}-${{ github.ref_name }} -R ${{ github.repository }} || true
+
+      - name: 初始化并配置ccache
+        run: |
+          export CCACHE_COMPILERCHECK="none"
+          export CCACHE_BASEDIR="${{ github.workspace }}"
+          export CCACHE_NOHASHDIR="true"
+          export CCACHE_HARDLINK="true"
+          export CCACHE_DIR="${{ env.CCACHE_DIR }}"
+          export CCACHE_MAXSIZE="${{ env.CCACHE_MAXSIZE }}"
+          mkdir -p "$CCACHE_DIR"
+          ccache -M "$CCACHE_MAXSIZE"
+          ccache -o compression=true
+          ccache -s
+
+      - name: 配置 KernelSU
+        run: ./scripts/ksu_setup.sh "kernel_workspace" "${{ github.event.inputs.ksu_type }}" "SunsetRNE"
+
+      - name: 应用补丁
+        run: |
+          ./scripts/patch_susfs.sh kernel_workspace
+          ./scripts/patch_lz4.sh kernel_workspace
+          ./scripts/patch_lz4kd.sh kernel_workspace
+          ./scripts/patch_net.sh kernel_workspace
+          ./scripts/patch_baseband_guard.sh kernel_workspace
+
+      - name: 写入内核配置
+        run: |
+          ./scripts/write_core_config.sh kernel_workspace ./common/arch/arm64/configs/gki_defconfig
+          ./scripts/write_feature_config.sh kernel_workspace ./common/arch/arm64/configs/gki_defconfig
+          ./scripts/setup_localversion.sh kernel_workspace
+
+      - name: 构建内核
+        run: ./scripts/build_kernel.sh kernel_workspace
+
+      - name: 保存新的 ccache 缓存
+        if: inputs.ccache_update || steps.ccache_restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ env.CCACHE_KEY }}-${{ runner.os }}-${{ github.ref_name }}
+
+      - name: 内核后处理
+        run: ./scripts/patch_post_kernel.sh kernel_workspace
+
+      - name: 打包 AnyKernel3
+        run: ./scripts/package_anykernel.sh kernel_workspace
+
+      - name: 收集构建元信息
+        id: collect_meta
+        shell: bash
+        run: |
+          echo "ak3name=${AK3_NAME}" >> "$GITHUB_OUTPUT"
+          echo "ksuver=${KSUVER}" >> "$GITHUB_OUTPUT"
+
+      - name: 上传 Ccache 调试日志
+        if: always() && inputs.ccache_debug
+        uses: actions/upload-artifact@v4
+        with:
+          name: ccache-debug-log
+          path: ${{ github.workspace }}/kernel_workspace/ccache.log
+          if-no-files-found: ignore
+
+      - name: 上传 ZIP 工件
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.collect_meta.outputs.ak3name }}
+          path: ${{ github.workspace }}/kernel_workspace/AnyKernel*.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      actions: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 准备脚本权限
+        run: chmod +x scripts/*.sh
+
+      - name: 下载 ZIP 工件
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.ak3name }}
+          path: ./release_zips
+
+      - name: 导出发布环境变量
+        run: |
+          echo "SUB_VERSION=${{ needs.build.outputs.sub_version }}" >> "$GITHUB_ENV"
+          echo "KERNEL_NAME=${{ needs.build.outputs.kernel_name }}" >> "$GITHUB_ENV"
+          echo "PLATFORM_NAME=${{ needs.build.outputs.platform_name }}" >> "$GITHUB_ENV"
+          echo "DEVICE_DESC=${{ needs.build.outputs.device_desc }}" >> "$GITHUB_ENV"
+          echo "SOURCE_DESC=${{ needs.build.outputs.source_desc }}" >> "$GITHUB_ENV"
+          echo "KSUVER=${{ needs.build.outputs.ksuver }}" >> "$GITHUB_ENV"
+          echo "KSU_TYPE=${{ github.event.inputs.ksu_type }}" >> "$GITHUB_ENV"
+          echo "KPM_ENABLE=${{ github.event.inputs.kpm_enable }}" >> "$GITHUB_ENV"
+          echo "LZ4_ENABLE=${{ github.event.inputs.lz4_enable }}" >> "$GITHUB_ENV"
+          echo "LZ4KD_ENABLE=${{ github.event.inputs.lz4kd_enable }}" >> "$GITHUB_ENV"
+          echo "SUSFS_ENABLE=${{ github.event.inputs.susfs_enable }}" >> "$GITHUB_ENV"
+          echo "BETTER_NET=${{ github.event.inputs.better_net }}" >> "$GITHUB_ENV"
+          echo "BBR_ENABLE=${{ github.event.inputs.bbr_enable }}" >> "$GITHUB_ENV"
+          echo "SSG_ENABLE=${{ github.event.inputs.ssg_enable }}" >> "$GITHUB_ENV"
+          echo "REKERNEL_ENABLE=${{ github.event.inputs.rekernel_enable }}" >> "$GITHUB_ENV"
+          echo "BASEBAND_GUARD=${{ github.event.inputs.baseband_guard }}" >> "$GITHUB_ENV"
+          echo "KERNEL_SUFFIX=${{ github.event.inputs.kernel_suffix }}" >> "$GITHUB_ENV"
+
+      - name: 生成发布元信息
+        shell: bash
+        run: |
+          while IFS= read -r line; do
+            echo "$line" >> "$GITHUB_ENV"
+          done < <(./scripts/release_meta.sh)
+
+      - name: 创建发布
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "${{ env.TAG_HEAD }}-${{ env.TIME }}"
+          name: "${{ env.TAG_HEAD }}-${{ env.FULL_VERSION }}"
+          body_path: ${{ env.BODY_FILE }}
+          draft: false
+          prerelease: false
+          files: |
+            release_zips/AnyKernel3_*.zip
